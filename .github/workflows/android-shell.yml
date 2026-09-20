@@ -4,52 +4,172 @@ on:
   workflow_dispatch:
     inputs:
       site_url:
-        description: "要加载的自部署站点地址（https://…）"
-        required: false
-        type: string
-  push:
-    branches: [main]
-    paths: ["android-shell/**", ".github/workflows/android-shell.yml"]
+        description: '要加载的自托管站点地址 (https://...)'
+        required: true
+        default: ''
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    # 可选签名：仓库 Secrets 配置了 SHELL_KEYSTORE_BASE64 等四项时产出已签名 release
-    env:
-      SHELL_KEYSTORE_BASE64: ${{ secrets.SHELL_KEYSTORE_BASE64 }}
-      SHELL_KEYSTORE_PASSWORD: ${{ secrets.SHELL_KEYSTORE_PASSWORD }}
-      SHELL_KEY_ALIAS: ${{ secrets.SHELL_KEY_ALIAS }}
-      SHELL_KEY_PASSWORD: ${{ secrets.SHELL_KEY_PASSWORD }}
-      SHELL_SITE_URL: ${{ inputs.site_url || vars.SHELL_SITE_URL }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: "17"
+          java-version: '17'
+          distribution: 'temurin'
 
-      - uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: "8.7"
+      - name: Create project folder
+        run: mkdir -p android-shell && cd android-shell
 
-      - name: Decode keystore (optional)
-        if: ${{ env.SHELL_KEYSTORE_BASE64 != '' }}
+      - name: Generate settings.gradle
         run: |
-          echo "$SHELL_KEYSTORE_BASE64" | base64 -d > /tmp/shell.keystore
-          echo "SHELL_KEYSTORE_FILE=/tmp/shell.keystore" >> "$GITHUB_ENV"
+          cat > android-shell/settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "VirtualPhoneShell"
+          include ':app'
+          EOF
 
-      - name: Build APKs
-        run: gradle -p android-shell assembleDebug assembleRelease
+      - name: Generate root build.gradle
+        run: |
+          cat > android-shell/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.2.0' apply false
+              id 'org.jetbrains.kotlin.android' version '1.9.0' apply false
+          }
+          EOF
 
-      - name: Upload debug APK
+      - name: Generate app build.gradle
+        run: |
+          cat > android-shell/app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+              id 'org.jetbrains.kotlin.android'
+          }
+          android {
+              namespace "com.virtualphone.shell"
+              compileSdk 34
+              defaultConfig {
+                  applicationId "com.virtualphone.shell"
+                  minSdk 24
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+                  }
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_1_8
+                  targetCompatibility JavaVersion.VERSION_1_8
+              }
+              kotlinOptions {
+                  jvmTarget = '1.8'
+              }
+          }
+          dependencies {
+              implementation 'androidx.core:core-ktx:1.12.0'
+              implementation 'androidx.appcompat:appcompat:1.6.1'
+              implementation 'com.google.android.material:material:1.11.0'
+              implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+          }
+          EOF
+
+      - name: Generate AndroidManifest.xml（相册权限+刘海挖孔）
+        run: |
+          cat > android-shell/app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+              <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+              <application
+                  android:allowBackup="true"
+                  android:icon="@mipmap/ic_launcher"
+                  android:label="virtual-phone"
+                  android:roundIcon="@mipmap/ic_launcher_round"
+                  android:supportsRtl="true"
+                  android:theme="@style/AppTheme">
+                  <activity android:name=".MainActivity"
+                      android:exported="true"
+                      android:layoutInDisplayCutoutMode="shortEdges">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+      - name: Generate styles.xml（透明状态栏）
+        run: |
+          mkdir -p android-shell/app/src/main/res/values
+          cat > android-shell/app/src/main/res/values/styles.xml <<'EOF'
+          <resources>
+              <style name="AppTheme" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+                  <item name="android:statusBarColor">@android:color/transparent</item>
+                  <item name="android:windowLightStatusBar">true</item>
+                  <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+              </style>
+          </resources>
+          EOF
+
+      - name: Generate MainActivity.kt（边到边全屏）
+        run: |
+          mkdir -p android-shell/app/src/main/java/com/virtualphone/shell
+          cat > android-shell/app/src/main/java/com/virtualphone/shell/MainActivity.kt <<'EOF'
+          package com.virtualphone.shell
+          import android.os.Bundle
+          import androidx.appcompat.app.AppCompatActivity
+          import android.webkit.WebView
+          import android.webkit.WebViewClient
+          class MainActivity : AppCompatActivity() {
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  window.setDecorFitsSystemWindows(false)
+                  val webView = WebView(this)
+                  webView.settings.javaScriptEnabled = true
+                  webView.settings.domStorageEnabled = true
+                  webView.settings.allowFileAccess = true
+                  webView.settings.allowContentAccess = true
+                  webView.webViewClient = WebViewClient()
+                  setContentView(webView)
+                  val siteUrl = "${{ github.event.inputs.site_url }}"
+                  webView.loadUrl(siteUrl)
+              }
+          }
+          EOF
+
+      - name: Generate launcher icon resource
+        run: |
+          mkdir -p android-shell/app/src/main/res/mipmap
+          echo "icon" > android-shell/app/src/main/res/mipmap/ic_launcher
+
+      - name: Build APK
+        working-directory: android-shell
+        run: ./gradlew assembleRelease
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: float-shell-debug
-          path: android-shell/app/build/outputs/apk/debug/app-debug.apk
-
-      - name: Upload release APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: float-shell-release
-          path: android-shell/app/build/outputs/apk/release/*.apk
+          name: app-release
+          path: android-shell/app/build/outputs/apk/release/app-release.apk
